@@ -4,11 +4,11 @@
 
 A small, agent-readable workflow for continuing research work across a desktop, a laptop, and an optional remote compute host without pretending that chat memory is shared.
 
-The core idea is separation:
+The core idea is explicit state placement:
 
 - normal Git branches carry source, tests, and durable project facts;
-- a private `agent-relay` branch carries one short handoff ledger between trusted authoring computers;
-- a local overlay gives Codex and Claude Code the same operating rules without changing the product branch;
+- tracked mode carries Agent rules and one short handoff ledger on the private product branch for the simplest cross-device workflow;
+- detached mode keeps the ledger on a private `agent-relay` branch when product history must exclude Agent state;
 - remote runners receive verified Git bundles over existing SSH and keep no GitHub credentials.
 
 This repository contains a Codex Skill built on the open Agent Skills layout. The templates and scripts are usable by other coding agents as ordinary repository instructions too.
@@ -22,8 +22,8 @@ Stable rules, live task state, product history, and machine credentials have dif
 | Setup | Product sync | Handoff sync | Remote delivery |
 |---|---|---|---|
 | One computer | Git | local ledger | none |
-| Desktop + laptop | private GitHub remote | private `agent-relay` branch | none |
-| Desktop + laptop + runner | private GitHub remote | private `agent-relay` branch | verified bundle over SSH |
+| Desktop + laptop | private GitHub remote | tracked ledger on the product branch, or detached `agent-relay` | none |
+| Desktop + laptop + runner | private GitHub remote | either mode | verified bundle over SSH |
 
 The runner is intentionally not a third editing location. It runs a known commit and returns evidence.
 
@@ -36,12 +36,33 @@ For personal use, copy the skill folder into your user skills directory. Then in
 ## Initialize a project
 
 ```bash
+python .agents/skills/cross-device-relay/scripts/relay.py init --repo . --tracked
+```
+
+This prepares one-branch tracked mode. Review and commit `.relay/current.md`, `AGENTS.md`, `CLAUDE.md`, and the repository-scoped Skill. Each computer then receives the latest handoff through an ordinary `git pull --ff-only`.
+
+For detached mode instead:
+
+```bash
 python .agents/skills/cross-device-relay/scripts/relay.py init --repo /path/to/project
 ```
 
 The command creates a local `.relay/current.md`, compatible `AGENTS.md` and `CLAUDE.md` files when they are absent, and clone-local exclusions. Existing tracked instruction files are preserved.
 
-Typical baton flow:
+Typical tracked-mode baton flow:
+
+```bash
+git pull --ff-only origin main
+python .agents/skills/cross-device-relay/scripts/relay.py doctor --repo .
+python .agents/skills/cross-device-relay/scripts/relay.py claim --repo . --agent CODEX
+# work, test, update the ledger, then release it
+python .agents/skills/cross-device-relay/scripts/relay.py release --repo .
+git add <explicit-project-paths> .relay/current.md
+git commit -m "Describe the completed work"
+git push origin main
+```
+
+Detached-mode baton flow:
 
 ```bash
 python .agents/skills/cross-device-relay/scripts/relay.py doctor --repo .
@@ -53,7 +74,7 @@ python .agents/skills/cross-device-relay/scripts/relay.py release --repo .
 python .agents/skills/cross-device-relay/scripts/relay.py push-state --repo .
 ```
 
-The state commands use a separate `agent-relay` branch through a temporary checkout. They do not switch or add files to the product worktree. Pulling is preview-first and requires `--accept` when state differs. Publishing and acceptance block obvious credentials, private-key material, personal home paths, and machine-specific SSH settings. Use this branch only on a private remote and never put secrets in the ledger.
+In tracked mode, release the baton, commit the ledger with the product work, and push the product branch. In detached mode, the state commands use a separate `agent-relay` branch through a temporary checkout; pulling is preview-first and requires `--accept`. Both modes block obvious credentials, private-key material, personal home paths, and machine-specific SSH settings. Use relay state only on a private remote and never put secrets in the ledger.
 
 ## Deliver a pushed commit to a runner
 
@@ -72,7 +93,7 @@ An example project `.gitignore` is included in the Skill assets.
 
 ## An anonymized research example
 
-An image-enhancement project is edited on a desktop and a laptop. Both push product commits to a private GitHub repository and exchange a concise handoff through `agent-relay`. A laboratory GPU host has no GitHub token; it receives only the pushed commit through the bundle script, runs evaluation, and reports results. Local Agent instructions and the live ledger never enter the runner checkout.
+An image-enhancement project is edited serially on a desktop and a laptop. Both pull one private product branch containing a concise tracked handoff, then push code and the released ledger together. A laboratory GPU host has no GitHub token; it receives the pushed commit through the bundle script, runs evaluation, and reports results.
 
 ## Safety properties
 

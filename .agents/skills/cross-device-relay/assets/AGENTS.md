@@ -9,7 +9,6 @@ These rules apply to every coding agent in this checkout.
 5. Keep product facts in source, tests, durable docs, and Git history. Keep `.relay/current.md` short and limited to the current task, evidence, unfinished changes, risks, and next action.
 6. Never record passwords, tokens, private keys, secret host configuration, personal paths, or secret data in agent files, logs, commits, or relay state.
 7. Stage explicit paths, inspect the staged diff, and never force-push or rewrite history without explicit approval.
-8. Remote runners receive committed product revisions only. They do not hold GitHub credentials or the local agent overlay, and they are not a second source-editing location.
+8. Remote runners receive committed revisions only. They never hold GitHub credentials and are not a second source-editing location. A tracked relay may reach them as read-only context.
 
 Use the repository-scoped `cross-device-relay` skill for setup, cross-computer state exchange, runner delivery, handoff, or recovery.
-

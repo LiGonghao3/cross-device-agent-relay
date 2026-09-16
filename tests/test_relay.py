@@ -74,6 +74,25 @@ class RelayTests(unittest.TestCase):
             released = (repo / ".relay" / "current.md").read_text(encoding="utf-8")
             self.assertEqual(relay.header_value(released, "holder"), "NONE")
 
+    def test_tracked_ledger_accepts_its_parent_as_base(self):
+        with tempfile.TemporaryDirectory() as name:
+            repo = Path(name)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+            subprocess.run(["git", "add", "seed.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+            base = relay.git(repo, "rev-parse", "HEAD")
+            relay.init_repo(repo, install_skill=False, tracked=True)
+            text = (repo / ".relay" / "current.md").read_text(encoding="utf-8")
+            text = relay.replace_header(text, "branch", relay.git(repo, "branch", "--show-current"))
+            text = relay.replace_header(text, "head", base)
+            (repo / ".relay" / "current.md").write_text(text, encoding="utf-8")
+            subprocess.run(["git", "add", ".relay/current.md", "AGENTS.md", "CLAUDE.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "track relay"], cwd=repo, check=True)
+            relay.verify_ledger_identity(repo, text)
+
 
 if __name__ == "__main__":
     unittest.main()

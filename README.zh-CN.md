@@ -4,11 +4,11 @@
 
 这是一套给编码 Agent 使用的轻量工作流，让科研项目能够在台式机、笔记本和可选的远端计算节点之间连续工作，而不假设聊天记录或私有记忆可以跨会话共享。
 
-核心是把不同状态分开：
+核心是明确每种状态存在哪里：
 
 - 普通 Git 分支保存源码、测试和可复现的项目事实；
-- 私有 `agent-relay` 分支只保存一份简短的接棒账本；
-- 本地覆盖层让 Codex 与 Claude Code 遵守同一套规则，但不污染产品分支；
+- 跟踪模式把 Agent 规则和一份简短接棒账本直接放在私有产品分支上，获得最简单的跨机体验；
+- 分离模式在必须保持产品历史纯净时，继续用私有 `agent-relay` 分支保存账本；
 - 远端计算节点只接收经过验证的 Git bundle，不保存 GitHub 凭据。
 
 本仓库包含一个采用开放 Agent Skills 目录结构的 Codex Skill。模板和脚本也可以被其他编码 Agent 当作普通仓库规则使用。
@@ -22,8 +22,8 @@
 | 场景 | 产品同步 | 接棒同步 | 远端交付 |
 |---|---|---|---|
 | 单台电脑 | Git | 本地账本 | 无 |
-| 台式机 + 笔记本 | 私有 GitHub 仓库 | 私有 `agent-relay` 分支 | 无 |
-| 台式机 + 笔记本 + 计算节点 | 私有 GitHub 仓库 | 私有 `agent-relay` 分支 | SSH 上的已验证 bundle |
+| 台式机 + 笔记本 | 私有 GitHub 仓库 | 产品分支内跟踪账本，或独立 `agent-relay` | 无 |
+| 台式机 + 笔记本 + 计算节点 | 私有 GitHub 仓库 | 任一模式 | SSH 上的已验证 bundle |
 
 计算节点不是第三个源码编辑位置。它只运行确定的 commit，并返回验证证据。
 
@@ -36,12 +36,33 @@
 ## 初始化项目
 
 ```bash
+python .agents/skills/cross-device-relay/scripts/relay.py init --repo . --tracked
+```
+
+这会准备单分支跟踪模式。检查并提交 `.relay/current.md`、`AGENTS.md`、`CLAUDE.md` 和仓库级 Skill；之后每台电脑通过普通的 `git pull --ff-only` 就能同时获得代码与最新接棒信息。
+
+如果需要分离模式，则运行：
+
+```bash
 python .agents/skills/cross-device-relay/scripts/relay.py init --repo /path/to/project
 ```
 
 该命令会创建本地 `.relay/current.md`；在文件不存在且未被跟踪时创建兼容的 `AGENTS.md` 和 `CLAUDE.md`；并把本地覆盖层加入 `.git/info/exclude`。它不会覆盖已有的受版本控制 Agent 指令。
 
-典型接棒流程：
+典型的跟踪模式接棒流程：
+
+```bash
+git pull --ff-only origin main
+python .agents/skills/cross-device-relay/scripts/relay.py doctor --repo .
+python .agents/skills/cross-device-relay/scripts/relay.py claim --repo . --agent CODEX
+# 工作、验证、更新账本，然后释放接力棒
+python .agents/skills/cross-device-relay/scripts/relay.py release --repo .
+git add <明确列出的项目路径> .relay/current.md
+git commit -m "说明已完成的工作"
+git push origin main
+```
+
+分离模式接棒流程：
 
 ```bash
 python .agents/skills/cross-device-relay/scripts/relay.py doctor --repo .
@@ -53,9 +74,9 @@ python .agents/skills/cross-device-relay/scripts/relay.py release --repo .
 python .agents/skills/cross-device-relay/scripts/relay.py push-state --repo .
 ```
 
-状态命令通过临时 checkout 操作独立的 `agent-relay` 分支，不会切换产品工作区，也不会把账本加入产品历史。拉取时先显示差异，只有显式提供 `--accept` 才覆盖不同的本地账本。发布和接收前会阻止常见凭据、私钥内容、个人主目录路径及机器专属 SSH 配置。
+跟踪模式在交棒后把账本与产品修改一起 commit/push。分离模式仍通过临时 checkout 操作独立的 `agent-relay` 分支，拉取时先显示差异并要求显式 `--accept`。两种模式都会阻止常见凭据、私钥内容、个人主目录路径及机器专属 SSH 配置。
 
-这个扫描只是一层额外保护，不代表账本可以存放敏感信息。`agent-relay` 必须仅用于私有远端。
+这个扫描只是一层额外保护，不代表账本可以存放敏感信息。接棒状态只能放在私有远端。
 
 ## 把已推送的 commit 交付给远端节点
 
@@ -76,7 +97,7 @@ Skill 的 `assets/gitignore.example` 提供了一个可调整的项目级示例�
 
 ## 匿名科研示例
 
-一个图像增强项目在台式机和笔记本上编辑。两台电脑都把产品 commit 推到私有 GitHub 仓库，并通过 `agent-relay` 交换简短接棒状态。实验室 GPU 主机不保存 GitHub token，只通过 bundle 脚本接收已经推送的 commit、运行评估并返回结果。本地 Agent 规则和实时账本不会进入实验室 checkout。
+一个图像增强项目在台式机和笔记本上串行编辑。两台电脑拉取同一个私有产品分支，分支中包含简短的跟踪式接棒记录，再把代码和已释放的账本一起推送。实验室 GPU 主机不保存 GitHub token，只通过 bundle 脚本接收已经推送的 commit、运行评估并返回结果。
 
 ## 与相近方案的区别
 

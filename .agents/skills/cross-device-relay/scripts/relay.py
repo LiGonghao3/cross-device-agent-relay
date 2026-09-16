@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage a bounded local handoff ledger and its private relay branch."""
+"""Manage a bounded handoff ledger in tracked or detached mode."""
 
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ MANAGED_EXCLUDES = (
     "/AGENTS.md",
     "/CLAUDE.md",
     "/.agents/skills/cross-device-relay/",
+)
+TRACKED_RELAY_PATHS = (
+    ".relay/current.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".agents/skills/cross-device-relay/SKILL.md",
 )
 SENSITIVE_PATTERNS = (
     ("private key material", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
@@ -80,6 +86,18 @@ def add_local_excludes(repo: Path) -> None:
         exclude.write_text(existing + prefix + block, encoding="utf-8")
 
 
+def remove_managed_excludes(repo: Path) -> None:
+    exclude = Path(git(repo, "rev-parse", "--git-path", "info/exclude"))
+    if not exclude.is_absolute():
+        exclude = repo / exclude
+    if not exclude.exists():
+        return
+    lines = exclude.read_text(encoding="utf-8").splitlines()
+    blocked = set(MANAGED_EXCLUDES) | {"# cross-device-relay local overlay"}
+    updated = "\n".join(line for line in lines if line not in blocked).rstrip()
+    exclude.write_text(updated + ("\n" if updated else ""), encoding="utf-8")
+
+
 def copy_if_safe(repo: Path, source: Path, relative: str) -> str:
     target = repo / relative
     if is_tracked(repo, relative):
@@ -91,8 +109,11 @@ def copy_if_safe(repo: Path, source: Path, relative: str) -> str:
     return f"created {relative}"
 
 
-def init_repo(repo: Path, install_skill: bool) -> None:
-    add_local_excludes(repo)
+def init_repo(repo: Path, install_skill: bool, tracked: bool = False) -> None:
+    if tracked:
+        remove_managed_excludes(repo)
+    else:
+        add_local_excludes(repo)
     messages = [
         copy_if_safe(repo, asset("current.md"), ".relay/current.md"),
         copy_if_safe(repo, asset("AGENTS.md"), "AGENTS.md"),
@@ -105,6 +126,8 @@ def init_repo(repo: Path, install_skill: bool) -> None:
             messages.append("installed repository-scoped skill")
         else:
             messages.append("preserved existing repository-scoped skill")
+    if tracked:
+        messages.append("tracked mode prepared; review and commit the relay files on the product branch")
     print("\n".join(messages))
 
 
@@ -156,8 +179,16 @@ def verify_ledger_identity(repo: Path, text: str) -> None:
     current_head = git(repo, "rev-parse", "HEAD")
     if recorded_branch and recorded_branch != current_branch:
         raise RelayError(f"ledger branch {recorded_branch} does not match {current_branch}")
-    if recorded_head and recorded_head != current_head:
-        raise RelayError(f"ledger HEAD {recorded_head} does not match {current_head}")
+    if recorded_head:
+        if is_tracked(repo, ".relay/current.md"):
+            if run(
+                ["git", "merge-base", "--is-ancestor", recorded_head, current_head],
+                repo,
+                check=False,
+            ).returncode:
+                raise RelayError(f"tracked ledger base {recorded_head} is not an ancestor of {current_head}")
+        elif recorded_head != current_head:
+            raise RelayError(f"ledger HEAD {recorded_head} does not match {current_head}")
 
 
 def write_atomic(path: Path, text: str) -> None:
@@ -215,13 +246,19 @@ def fetch_remote_state(repo: Path) -> str:
     return git(repo, "show", "FETCH_HEAD:current.md") + "\n"
 
 
-def state_diff(local_text: str, remote_text: str) -> str:
+def fetch_tracked_state(repo: Path) -> str:
+    branch = git(repo, "branch", "--show-current")
+    git(repo, "fetch", "origin", branch)
+    return git(repo, "show", f"origin/{branch}:.relay/current.md") + "\n"
+
+
+def state_diff(local_text: str, remote_text: str, remote_label: str = "origin/agent-relay:current.md") -> str:
     return "".join(
         difflib.unified_diff(
             local_text.splitlines(keepends=True),
             remote_text.splitlines(keepends=True),
             fromfile="local/.relay/current.md",
-            tofile="origin/agent-relay:current.md",
+            tofile=remote_label,
         )
     )
 
@@ -229,12 +266,16 @@ def state_diff(local_text: str, remote_text: str) -> str:
 def preview_state(repo: Path) -> None:
     local_text = ledger_path(repo).read_text(encoding="utf-8")
     ensure_ledger_safe(local_text)
-    remote_text = fetch_remote_state(repo)
+    tracked = is_tracked(repo, ".relay/current.md")
+    remote_text = fetch_tracked_state(repo) if tracked else fetch_remote_state(repo)
     ensure_ledger_safe(remote_text)
-    print(state_diff(local_text, remote_text) or "relay state is identical")
+    label = f"origin/{git(repo, 'branch', '--show-current')}:.relay/current.md" if tracked else "origin/agent-relay:current.md"
+    print(state_diff(local_text, remote_text, label) or "relay state is identical")
 
 
 def push_state(repo: Path) -> None:
+    if is_tracked(repo, ".relay/current.md"):
+        raise RelayError("tracked mode publishes the ledger with the product commit; commit and push the current branch")
     source = ledger_path(repo)
     text = source.read_text(encoding="utf-8")
     ensure_ledger_safe(text)
@@ -260,6 +301,8 @@ def push_state(repo: Path) -> None:
 
 
 def pull_state(repo: Path, accept: bool) -> None:
+    if is_tracked(repo, ".relay/current.md"):
+        raise RelayError("tracked mode receives the ledger with the product branch; use git pull --ff-only")
     local_text = ledger_path(repo).read_text(encoding="utf-8")
     ensure_ledger_safe(local_text)
     if header_value(local_text, "holder") != "NONE":
@@ -288,14 +331,20 @@ def doctor(repo: Path) -> None:
     verify_ledger_identity(repo, text)
     if git(repo, "status", "--porcelain", "--untracked-files=no"):
         raise RelayError("tracked worktree is not clean")
-    missing = [
-        path
-        for path in MANAGED_EXCLUDES
-        if run(["git", "check-ignore", "-q", "--", path.lstrip("/")], repo, check=False).returncode
-    ]
-    if missing:
-        raise RelayError("local overlay exclusions are missing: " + ", ".join(missing))
-    print("doctor: ok")
+    if is_tracked(repo, ".relay/current.md"):
+        missing = [path for path in TRACKED_RELAY_PATHS if not is_tracked(repo, path)]
+        if missing:
+            raise RelayError("tracked relay files are missing from Git: " + ", ".join(missing))
+        print("doctor: ok (tracked mode)")
+    else:
+        missing = [
+            path
+            for path in MANAGED_EXCLUDES
+            if run(["git", "check-ignore", "-q", "--", path.lstrip("/")], repo, check=False).returncode
+        ]
+        if missing:
+            raise RelayError("local overlay exclusions are missing: " + ", ".join(missing))
+        print("doctor: ok (detached mode)")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -306,6 +355,7 @@ def parser() -> argparse.ArgumentParser:
         item.add_argument("--repo", default=".")
         if name == "init":
             item.add_argument("--no-install-skill", action="store_true")
+            item.add_argument("--tracked", action="store_true")
         if name == "pull-state":
             item.add_argument("--accept", action="store_true")
     item = sub.add_parser("claim")
@@ -319,7 +369,7 @@ def main() -> int:
     try:
         repo = repo_root(args.repo)
         if args.command == "init":
-            init_repo(repo, not args.no_install_skill)
+            init_repo(repo, not args.no_install_skill, args.tracked)
         elif args.command == "status":
             status(repo)
         elif args.command == "doctor":
