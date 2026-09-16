@@ -37,12 +37,14 @@ Use a versioned `.gitignore` for project-wide generated files that every clone s
 ## Exchange the baton
 
 - `scripts/relay.py status --repo <path>`: show current Git identity and the ledger.
+- `scripts/relay.py doctor --repo <path>`: verify ledger shape, Git identity, tracked cleanliness, local exclusions, and obvious secret/path leaks.
 - `scripts/relay.py claim --repo <path> --agent CODEX|CLAUDE`: claim the soft lock after verification.
 - `scripts/relay.py release --repo <path>`: release the lock after recording the actual stop point.
 - `scripts/relay.py push-state --repo <path>`: publish only the ledger to the private `agent-relay` branch without switching the product worktree.
-- `scripts/relay.py pull-state --repo <path>`: retrieve that ledger on another trusted authoring computer.
+- `scripts/relay.py preview-state --repo <path>`: fetch and display the remote ledger diff without overwriting local state.
+- `scripts/relay.py pull-state --repo <path> --accept`: apply the reviewed remote ledger on another trusted authoring computer.
 
-Before pushing state, remove secrets, machine-specific host details, personal paths, raw logs, and stale narrative. The ledger should name one current task, completed evidence, intentional unfinished changes, risks, and the next executable action. Git already contains historical detail.
+The script blocks obvious credentials, private-key material, personal home paths, and machine-specific SSH settings before publishing or accepting state. This scan is defense in depth, not permission to place sensitive data in the ledger. The ledger should name one current task, completed evidence, intentional unfinished changes, risks, and the next executable action. Git already contains historical detail.
 
 ## Deliver to a remote runner
 

@@ -36,6 +36,13 @@ class RelayTests(unittest.TestCase):
         with self.assertRaises(relay.RelayError):
             relay.replace_header("# no frontmatter\n", "holder", "CODEX")
 
+    def test_empty_quoted_header_is_valid(self):
+        self.assertEqual(relay.header_value('branch: ""\n', "branch"), "")
+
+    def test_sensitive_ledger_is_blocked(self):
+        with self.assertRaises(relay.RelayError):
+            relay.ensure_ledger_safe("token=example-secret-value\n")
+
     def test_init_creates_only_ignored_overlay(self):
         with tempfile.TemporaryDirectory() as name:
             repo = Path(name)
@@ -47,6 +54,25 @@ class RelayTests(unittest.TestCase):
                 ["git", "status", "--short"], cwd=repo, check=True, text=True, capture_output=True
             ).stdout
             self.assertEqual(status, "")
+
+    def test_claim_records_git_identity(self):
+        with tempfile.TemporaryDirectory() as name:
+            repo = Path(name)
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("ok\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+            relay.init_repo(repo, install_skill=False)
+            relay.claim(repo, "CODEX")
+            text = (repo / ".relay" / "current.md").read_text(encoding="utf-8")
+            self.assertEqual(relay.header_value(text, "holder"), "CODEX")
+            self.assertEqual(relay.header_value(text, "head"), relay.git(repo, "rev-parse", "HEAD"))
+            relay.doctor(repo)
+            relay.release(repo)
+            released = (repo / ".relay" / "current.md").read_text(encoding="utf-8")
+            self.assertEqual(relay.header_value(released, "holder"), "NONE")
 
 
 if __name__ == "__main__":

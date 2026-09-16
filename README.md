@@ -1,5 +1,7 @@
 # Cross-device Agent Relay
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 A small, agent-readable workflow for continuing research work across a desktop, a laptop, and an optional remote compute host without pretending that chat memory is shared.
 
 The core idea is separation:
@@ -42,14 +44,16 @@ The command creates a local `.relay/current.md`, compatible `AGENTS.md` and `CLA
 Typical baton flow:
 
 ```bash
-python .agents/skills/cross-device-relay/scripts/relay.py pull-state --repo .
+python .agents/skills/cross-device-relay/scripts/relay.py doctor --repo .
+python .agents/skills/cross-device-relay/scripts/relay.py preview-state --repo .
+python .agents/skills/cross-device-relay/scripts/relay.py pull-state --repo . --accept
 python .agents/skills/cross-device-relay/scripts/relay.py claim --repo . --agent CODEX
 # work, test, and update the ledger
 python .agents/skills/cross-device-relay/scripts/relay.py release --repo .
 python .agents/skills/cross-device-relay/scripts/relay.py push-state --repo .
 ```
 
-The state commands use a separate `agent-relay` branch through a temporary checkout. They do not switch or add files to the product worktree. Use this branch only on a private remote and never put secrets in the ledger.
+The state commands use a separate `agent-relay` branch through a temporary checkout. They do not switch or add files to the product worktree. Pulling is preview-first and requires `--accept` when state differs. Publishing and acceptance block obvious credentials, private-key material, personal home paths, and machine-specific SSH settings. Use this branch only on a private remote and never put secrets in the ledger.
 
 ## Deliver a pushed commit to a runner
 
@@ -77,8 +81,22 @@ An image-enhancement project is edited on a desktop and a laptop. Both push prod
 - No runner update when histories diverge.
 - No overwrite of existing tracked Agent instructions during initialization.
 - No claim that another machine is synchronized without verifying its commit.
+- No silent overwrite of a different local handoff ledger.
+- No state publication when the ledger contains common secret or personal-path patterns.
+
+## Related approaches
+
+This project intentionally stays narrower than several related projects:
+
+- [Agent Handoff](https://github.com/artyomboyko/Agent_Handoff) uses GitHub Issues, pull requests, claims, and repository-tracked memory for team-scale delivery.
+- [claude-codex-handoff](https://github.com/OpenMOSS/claude-codex-handoff) provides asynchronous JSONL streams, leases, cursors, and scheduled wakeups for simultaneously running agents.
+- [agent-handoff-kit](https://github.com/jimozo/agent-handoff-kit) uses branch-per-agent work, rotating session logs, and several handoff modes.
+- [shared-agent-memory](https://github.com/dan-calin/shared-agent-memory) adds an MCP-backed memory service and optional file-level edit claims.
+- [coding-agent-toolkit](https://github.com/stefan-jansen/coding-agent-toolkit) covers the full path from specification and planning through GitHub issues, pull requests, and shipping.
+- [agent-handoff](https://github.com/im-ian/agent-handoff) synchronizes broader Claude/Codex configuration between devices through a private hub, including path tokenization and dependency restoration.
+
+Cross-device Agent Relay keeps a single serial baton, one bounded Markdown ledger, ordinary Git, and credential-free runner delivery. It adopts preview-before-overwrite, local diagnostics, and secret/path scanning, while leaving asynchronous orchestration, semantic memory, agent-wide configuration sync, and project-management policy optional.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-

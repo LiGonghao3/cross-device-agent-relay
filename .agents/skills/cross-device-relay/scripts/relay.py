@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,14 @@ MANAGED_EXCLUDES = (
     "/AGENTS.md",
     "/CLAUDE.md",
     "/.agents/skills/cross-device-relay/",
+)
+SENSITIVE_PATTERNS = (
+    ("private key material", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
+    ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
+    ("secret assignment", re.compile(r"(?i)\b(?:password|passwd|token|api[_-]?key|secret)\s*[:=]\s*[^\s`]+")),
+    ("Windows user path", re.compile(r"(?i)\b[A-Z]:\\Users\\[^\\\s]+")),
+    ("Unix user path", re.compile(r"/(?:Users|home)/[^/\s]+")),
+    ("machine-specific SSH setting", re.compile(r"(?mi)^\s*(?:HostName|IdentityFile)\s+\S+")),
 )
 
 
@@ -106,11 +115,20 @@ def ledger_path(repo: Path) -> Path:
     return path
 
 
+def ensure_ledger_safe(text: str) -> None:
+    findings = [label for label, pattern in SENSITIVE_PATTERNS if pattern.search(text)]
+    if findings:
+        raise RelayError("ledger contains blocked sensitive data: " + ", ".join(findings))
+
+
 def header_value(text: str, key: str) -> str:
-    match = re.search(rf'(?m)^{re.escape(key)}:\s*"?([^"\n]+)"?\s*$', text)
+    match = re.search(
+        rf'(?m)^{re.escape(key)}:\s*(?:"([^"]*)"|([^\n]*?))\s*$', text
+    )
     if not match:
         raise RelayError(f"ledger header has no {key} field")
-    return match.group(1).strip()
+    value = match.group(1) if match.group(1) is not None else match.group(2)
+    return value.strip()
 
 
 def replace_header(text: str, key: str, value: str) -> str:
@@ -131,6 +149,17 @@ def update_identity(repo: Path, text: str) -> str:
     return replace_header(text, "head", git(repo, "rev-parse", "HEAD"))
 
 
+def verify_ledger_identity(repo: Path, text: str) -> None:
+    recorded_branch = header_value(text, "branch")
+    recorded_head = header_value(text, "head")
+    current_branch = git(repo, "branch", "--show-current")
+    current_head = git(repo, "rev-parse", "HEAD")
+    if recorded_branch and recorded_branch != current_branch:
+        raise RelayError(f"ledger branch {recorded_branch} does not match {current_branch}")
+    if recorded_head and recorded_head != current_head:
+        raise RelayError(f"ledger HEAD {recorded_head} does not match {current_head}")
+
+
 def write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -141,6 +170,8 @@ def write_atomic(path: Path, text: str) -> None:
 def claim(repo: Path, agent: str) -> None:
     path = ledger_path(repo)
     text = path.read_text(encoding="utf-8")
+    ensure_ledger_safe(text)
+    verify_ledger_identity(repo, text)
     holder = header_value(text, "holder")
     if holder not in {"NONE", agent}:
         raise RelayError(f"baton is held by {holder}")
@@ -152,6 +183,8 @@ def claim(repo: Path, agent: str) -> None:
 def release(repo: Path) -> None:
     path = ledger_path(repo)
     text = path.read_text(encoding="utf-8")
+    ensure_ledger_safe(text)
+    verify_ledger_identity(repo, text)
     text = replace_header(text, "holder", "NONE")
     text = replace_header(text, "status", "READY_TO_HANDOFF")
     write_atomic(path, update_identity(repo, text))
@@ -177,9 +210,34 @@ def remote_url(repo: Path) -> str:
     return url
 
 
+def fetch_remote_state(repo: Path) -> str:
+    git(repo, "fetch", "origin", RELAY_BRANCH)
+    return git(repo, "show", "FETCH_HEAD:current.md") + "\n"
+
+
+def state_diff(local_text: str, remote_text: str) -> str:
+    return "".join(
+        difflib.unified_diff(
+            local_text.splitlines(keepends=True),
+            remote_text.splitlines(keepends=True),
+            fromfile="local/.relay/current.md",
+            tofile="origin/agent-relay:current.md",
+        )
+    )
+
+
+def preview_state(repo: Path) -> None:
+    local_text = ledger_path(repo).read_text(encoding="utf-8")
+    ensure_ledger_safe(local_text)
+    remote_text = fetch_remote_state(repo)
+    ensure_ledger_safe(remote_text)
+    print(state_diff(local_text, remote_text) or "relay state is identical")
+
+
 def push_state(repo: Path) -> None:
     source = ledger_path(repo)
     text = source.read_text(encoding="utf-8")
+    ensure_ledger_safe(text)
     if header_value(text, "holder") != "NONE":
         raise RelayError("release the baton before publishing relay state")
     with tempfile.TemporaryDirectory(prefix="agent-relay-") as name:
@@ -201,25 +259,55 @@ def push_state(repo: Path) -> None:
         git(temp, "push", "origin", f"HEAD:refs/heads/{RELAY_BRANCH}")
 
 
-def pull_state(repo: Path) -> None:
+def pull_state(repo: Path, accept: bool) -> None:
     local_text = ledger_path(repo).read_text(encoding="utf-8")
+    ensure_ledger_safe(local_text)
     if header_value(local_text, "holder") != "NONE":
         raise RelayError("local baton is active; release it before pulling remote state")
-    git(repo, "fetch", "origin", RELAY_BRANCH)
-    text = git(repo, "show", "FETCH_HEAD:current.md") + "\n"
+    text = fetch_remote_state(repo)
+    ensure_ledger_safe(text)
     if header_value(text, "holder") != "NONE":
         raise RelayError("remote relay state still has an active holder")
+    diff = state_diff(local_text, text)
+    if not diff:
+        print("relay state is identical")
+        return
+    print(diff)
+    if not accept:
+        raise RelayError("remote state differs; inspect the diff and rerun pull-state with --accept")
     write_atomic(ledger_path(repo), text)
+
+
+def doctor(repo: Path) -> None:
+    text = ledger_path(repo).read_text(encoding="utf-8")
+    ensure_ledger_safe(text)
+    for key in ("protocol", "updated", "holder", "status", "branch", "head"):
+        header_value(text, key)
+    if header_value(text, "holder") not in {"NONE", "CODEX", "CLAUDE"}:
+        raise RelayError("ledger holder is invalid")
+    verify_ledger_identity(repo, text)
+    if git(repo, "status", "--porcelain", "--untracked-files=no"):
+        raise RelayError("tracked worktree is not clean")
+    missing = [
+        path
+        for path in MANAGED_EXCLUDES
+        if run(["git", "check-ignore", "-q", "--", path.lstrip("/")], repo, check=False).returncode
+    ]
+    if missing:
+        raise RelayError("local overlay exclusions are missing: " + ", ".join(missing))
+    print("doctor: ok")
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="command", required=True)
-    for name in ("init", "status", "release", "push-state", "pull-state"):
+    for name in ("init", "status", "doctor", "release", "push-state", "preview-state", "pull-state"):
         item = sub.add_parser(name)
         item.add_argument("--repo", default=".")
         if name == "init":
             item.add_argument("--no-install-skill", action="store_true")
+        if name == "pull-state":
+            item.add_argument("--accept", action="store_true")
     item = sub.add_parser("claim")
     item.add_argument("--repo", default=".")
     item.add_argument("--agent", choices=("CODEX", "CLAUDE"), required=True)
@@ -234,14 +322,18 @@ def main() -> int:
             init_repo(repo, not args.no_install_skill)
         elif args.command == "status":
             status(repo)
+        elif args.command == "doctor":
+            doctor(repo)
         elif args.command == "claim":
             claim(repo, args.agent)
         elif args.command == "release":
             release(repo)
         elif args.command == "push-state":
             push_state(repo)
+        elif args.command == "preview-state":
+            preview_state(repo)
         elif args.command == "pull-state":
-            pull_state(repo)
+            pull_state(repo, args.accept)
     except RelayError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
