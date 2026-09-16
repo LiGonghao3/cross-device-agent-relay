@@ -1,0 +1,21 @@
+# Project-wide generated files (adapt to the project)
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.log
+
+# Credentials must never be committed. Ignore rules are not a security boundary.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Keep the relay overlay local with .git/info/exclude instead of this file:
+# /.relay/
+# /AGENTS.md
+# /CLAUDE.md
+# /.agents/skills/cross-device-relay/
+

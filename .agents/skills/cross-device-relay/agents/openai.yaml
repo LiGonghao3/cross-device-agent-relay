@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-device Relay"
+  short_description: "Coordinate agents across trusted computers and runners"
+  default_prompt: "Use $cross-device-relay to set up a safe multi-device research workflow."
